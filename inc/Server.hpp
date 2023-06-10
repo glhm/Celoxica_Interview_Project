@@ -1,30 +1,33 @@
-#ifndef SERVER_HPP
-#define SERVER_HPP
+#pragma once
 
+#include <atomic>
 #include <mutex>
-#include <string>
-#include <winsock2.h>
+#include <vector>
+#include <cstdint>
 
 constexpr int MAX_CLIENTS = 6;
+constexpr int BUFFER_SIZE = 1024;
 constexpr int PORT = 12345;
-constexpr int ID_INTERVAL_SECONDS = 1;
 
-class Server
-{
+class Server {
 public:
     Server();
     ~Server();
 
     void start();
+    void stop();
 
 private:
-    SOCKET m_socket;
-    bool m_running;
-    int m_clientCount;
-    std::mutex m_mutex;
+    const uint32_t serverStartTime = static_cast<uint32_t>(std::time(nullptr));
 
-    void handleClient(SOCKET clientSocket);
-    std::string generateUniqueID();
+    std::atomic<bool> exitServer;
+    std::atomic<int> numClients;
+    std::vector<int> clients;
+
+    std::mutex mtx;
+
+    uint32_t generateID();
+    void signalHandler(int signal);
+    void clientThread(int clientSocket);
+    void listenThread(int clientSocket);
 };
-
-#endif // SERVER_HPP

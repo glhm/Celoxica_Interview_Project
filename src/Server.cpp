@@ -1,165 +1,176 @@
 #include "Server.hpp"
 #include <iostream>
 #include <thread>
-#include <chrono>
 #include <cstring>
-#include <ctime>
 #include <cstdlib>
-#include <winsock2.h>
+#include <ctime>
+#include <chrono>
+#include <vector>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <csignal>
+#include <atomic>
 
-#pragma comment(lib, "ws2_32.lib")
 
-Server::Server() : m_socket(INVALID_SOCKET), m_running(false), m_clientCount(0)
-{
-    std::cout << "Server created" << std::endl;
-}
+Server::Server() : numClients(0), exitServer(false) {}
 
-Server::~Server()
-{
-    if (m_socket != INVALID_SOCKET)
-    {
-        closesocket(m_socket);
-    }
-}
+Server::~Server() {}
 
-void Server::start()
-{
-    // Initialize Winsock
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-    {
-        std::cerr << "Failed to initialize Winsock\n";
+void Server::start() {
+    int serverSocket, clientSocket;
+    struct sockaddr_in serverAddress, clientAddress;
+    socklen_t clientLength = sizeof(clientAddress);
+
+    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket == -1) {
+        std::cerr << "Error creating server socket" << std::endl;
         return;
     }
 
-    // Create socket
-    m_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (m_socket == INVALID_SOCKET)
-    {
-        std::cerr << "Failed to create socket\n";
-        WSACleanup();
-        return;
-    }
-
-    // Set socket options
-    int enable = 1;
-    if (setsockopt(m_socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&enable), sizeof(int)) == SOCKET_ERROR)
-    {
-        std::cerr << "Failed to set socket options\n";
-        closesocket(m_socket);
-        WSACleanup();
-        return;
-    }
-
-    // Bind socket to port
-    sockaddr_in serverAddress{};
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_addr.s_addr = INADDR_ANY;
     serverAddress.sin_port = htons(PORT);
+    serverAddress.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(m_socket, reinterpret_cast<struct sockaddr *>(&serverAddress), sizeof(serverAddress)) == SOCKET_ERROR)
-    {
-        std::cerr << "Failed to bind socket\n";
-        closesocket(m_socket);
-        WSACleanup();
+    if (bind(serverSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) == -1) {
+        std::cerr << "Error binding server socket" << std::endl;
+        close(serverSocket);
         return;
     }
 
-    // Start listening for incoming connections
-    if (listen(m_socket, MAX_CLIENTS) == SOCKET_ERROR)
-    {
-        std::cerr << "Failed to start listening\n";
-        closesocket(m_socket);
-        WSACleanup();
+    if (listen(serverSocket, MAX_CLIENTS) == -1) {
+        std::cerr << "Error listening for connections" << std::endl;
+        close(serverSocket);
         return;
     }
 
-    m_running = true;
-    std::cout << "Server started, listening on port " << PORT << std::endl;
+    std::cout << "Server started. Listening on port " << PORT << std::endl;
 
-    while (m_running)
-    {
-        // Accept new client connection
-        sockaddr_in clientAddress{};
-        int clientAddressLength = sizeof(clientAddress);
-        SOCKET clientSocket = accept(m_socket, reinterpret_cast<struct sockaddr *>(&clientAddress), &clientAddressLength);
-
-        if (clientSocket == INVALID_SOCKET)
-        {
-            std::cerr << "Failed to accept client connection\n";
-            continue;
+    while (!exitServer.load()) {
+        clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddress, &clientLength);
+        if (clientSocket == -1) {
+            std::cerr << "Error accepting client connection" << std::endl;
+            close(serverSocket);
+            return;
         }
 
-        std::cout << "New client connected" << std::endl;
-
-        // Check if the maximum number of clients has been reached
-        std::unique_lock<std::mutex> lock(m_mutex);
-        if (m_clientCount >= MAX_CLIENTS)
         {
-            std::cerr << "Maximum number of clients reached\n";
-            lock.unlock();
-            closesocket(clientSocket);
-            continue;
+            std::lock_guard<std::mutex> lock(mtx);
+            if (numClients >= MAX_CLIENTS) {
+                std::cerr << "Maximum number of clients reached" << std::endl;
+                close(clientSocket);
+                continue;
+            }
+
+            numClients++;
+            clients.push_back(clientSocket);
+            std::cout << "Client " << numClients << " connected" << std::endl;
         }
 
-        // Create a new thread for the client
-        std::thread clientThread(&Server::handleClient, this, clientSocket);
+        std::thread clientThread(&Server::clientThread, this, clientSocket);
         clientThread.detach();
 
-        // Increment the client count
-        ++m_clientCount;
+        std::thread listenThread(&Server::listenThread, this, clientSocket);
+        listenThread.detach();
     }
 
-    // Close the socket when done
-    closesocket(m_socket);
-
-    // Cleanup Winsock
-    WSACleanup();
+    close(serverSocket);
     std::cout << "Server stopped" << std::endl;
 }
 
-void Server::handleClient(SOCKET clientSocket)
-{
-    std::cout << "Handling client" << std::endl;
-
-    std::string uniqueID = generateUniqueID();
-    std::cout << "Sending unique ID: " << uniqueID << std::endl;
-
-    while (true)
-    {
-        // Send the unique ID to the client
-        if (send(clientSocket, uniqueID.c_str(), static_cast<int>(uniqueID.length()), 0) == SOCKET_ERROR)
-        {
-            std::cerr << "Failed to send unique ID to client\n";
-            break;
-        }
-
-        // Terminate the ID with a new line character
-        char newline = '\n';
-        if (send(clientSocket, &newline, sizeof(newline), 0) == SOCKET_ERROR)
-        {
-            std::cerr << "Failed to send newline character to client\n";
-            break;
-        }
-
-        // Wait for 1 second before sending the ID again
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-
-    // Close the client socket
-    closesocket(clientSocket);
-
-    // Decrement the client count
-    std::lock_guard<std::mutex> lock(m_mutex);
-    --m_clientCount;
-
-    std::cout << "Client handling complete" << std::endl;
+void Server::stop() {
+    exitServer.store(true);
 }
 
-std::string Server::generateUniqueID()
-{
-    // Generate a unique ID here
-    // For testing purposes, we'll use a simple counter
-    static int counter = 0;
-    return std::to_string(counter++);
+uint32_t Server::generateID() {
+    auto start = std::chrono::high_resolution_clock::now();
+
+    static std::atomic<uint32_t> counter{0};
+    uint32_t id = (serverStartTime << 16) | counter.fetch_add(1);
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+
+    std::cout << "Runtime duration of generateID(): " << duration.count() << " nanoseconds" << std::endl;
+
+    return id;
+}
+
+void Server::clientThread(int clientSocket) {
+    char buffer[BUFFER_SIZE];
+
+    while (!exitServer.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+
+        uint32_t id = generateID();
+
+        std::stringstream ss;
+        ss << std::setfill('0') << std::setw(8) << std::hex << id << "\n\r";
+        std::string message = ss.str();
+
+        if (send(clientSocket, message.c_str(), message.size(), 0) == -1) {
+            std::cerr << "Error sending data to client" << std::endl;
+            break;
+        }
+    }
+
+    close(clientSocket);
+
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        numClients--;
+
+        auto it = std::find_if(clients.begin(), clients.end(), [clientSocket](int socket) {
+            return socket == clientSocket;
+        });
+
+        if (it != clients.end()) {
+            clients.erase(it);
+        }
+    }
+
+    std::cout << "On passe ici Client disconnected" << std::endl;
+}
+
+void Server::listenThread(int clientSocket) {
+    char buffer[BUFFER_SIZE];
+
+    while (!exitServer.load()) {
+        int bytesRead = recv(clientSocket, buffer, BUFFER_SIZE, 0);
+        if (bytesRead == -1) {
+            std::cerr << "Error receiving data from client" << std::endl;
+            break;
+        }
+        else if (bytesRead == 0) {
+            std::cout << "On passe ici 1 Client disconnected" << std::endl;
+            break;
+        }
+
+        if (std::string(buffer, bytesRead).find('\n') != std::string::npos || std::string(buffer, bytesRead).find('\r') != std::string::npos) {
+            std::cout << "New line detected from client" << std::endl;
+            std::string message;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                std::stringstream ss;
+                ss << "Number of clients: " << numClients;
+                message = ss.str() + "\n";
+            }
+            // Broadcast number of clients to all clients
+            for (const auto& client : clients) {
+                if (client != clientSocket) {
+                    if (send(client, message.c_str(), message.size(), 0) == -1) {
+                        std::cerr << "Error sending data to client" << std::endl;
+                    }
+                }
+            }
+        }
+    }
+
+    close(clientSocket);
+    std::cout << "On passe ici 2Client disconnected" << std::endl;
 }
