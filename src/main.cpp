@@ -3,7 +3,7 @@
 #include <csignal>
 #include <memory>
 #include "Server.hpp"
-// Déclaration de la fonction de rappel pour SIGINT
+// global pointer to call stop from signalHandler
 std::unique_ptr<Server> server;
 
 void signalHandler(int signum)
@@ -18,12 +18,19 @@ void signalHandler(int signum)
 
 int main()
 {
-    signal(SIGINT, signalHandler);
+    signal(SIGINT, signalHandler); // bind signal emitted from Ctrl + C to signal void signalHandler(int signum)
 
     server = std::make_unique<Server>();
-    if (server->start())
+
+    if (server->init() == -1)
     {
-        std::cout << "Error Starting server, abort" << std::endl;
+        return 0;
+    }
+
+    if (server->start() == -1)
+    {
+        std::cout << "Error Starting server, finish" << std::endl;
+        return 0;
     }
 
     return 0;

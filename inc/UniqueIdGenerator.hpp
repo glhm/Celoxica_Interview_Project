@@ -6,12 +6,15 @@
 #include <random>
 
 /*
- * The class provides a method to get a unique 32 bits,
- * it assures a random number to up to 6 threads calling the method every seconds for 24h
+ * Provides a method to get a unique 32 bits,
+ * it assures a random number for up to 6 threads calling the method every seconds for 24h
  */
 class UniqueIdGenerator
 {
 public:
+    /*
+     * At construction the object will generates a random number
+     */
     UniqueIdGenerator();
 
     /**
@@ -24,15 +27,24 @@ public:
     uint32_t generateID();
 
 private:
+    /**
+     *  Counter to be iterated to provide a unique number for differents threads, max value 2^19-1
+     *  Atomic type so that two threads can't get the same value
+     */
     std::atomic<uint32_t> m_counter{0};
-    std::atomic<uint32_t> m_randomNumber; // Random value between 0 and 2^13 - 1
+
+    /**
+     *  Random value which will be initialized with a value between 0 and 2^13 - 1
+     * Atomic type so that two threads will not reset its value when max size is reached
+     */
+    std::atomic<uint32_t> m_randomNumber;
 
     std::default_random_engine m_randomEngine;                    // Random number generator engine
     std::uniform_int_distribution<uint32_t> m_randomDistribution; // Distribution for random number generation
-    const uint32_t m_randomNumberBits{13};
-    const uint32_t m_counterBits{19};
-    const uint32_t m_maxValueCounter;
-    const uint32_t m_maxValueRandom;
+    const uint32_t m_randomNumberBits{13};                        // number of bits of the random number
+    const uint32_t m_counterBits{19};                             // number of bits of the counter
+    const uint32_t m_maxValueCounter;                             // max value for the counter (2^)
+    const uint32_t m_maxValueRandom;                              // max value for the random number
 };
 
 #endif

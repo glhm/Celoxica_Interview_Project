@@ -1,237 +1,253 @@
 #include "Server.hpp"
+#include "Output.hpp"
+
 int Server::init()
 {
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1)
+    // Create socket, reliable mode, IPv4 adress
+    m_server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (m_server_socket == -1)
     {
-        std::cerr << "Failed to create socket: " << strerror(errno) << std::endl;
-        return 1;
+        Output::shared_print("Failed to create socket ");
+        return -1;
     }
 
-    int flags = fcntl(server_socket, F_GETFL, 0);
+    // get file descriptor file associated with server socket
+    int flags = fcntl(m_server_socket, F_GETFL, 0);
     if (flags == -1)
     {
-        std::cerr << "Failed to get socket flags: " << strerror(errno) << std::endl;
-        return 1;
+        Output::shared_print("Failed to get socket flags ");
+        return -1;
     }
-    flags |= O_NONBLOCK;
-    int ret = fcntl(server_socket, F_SETFL, flags);
+    flags |= O_NONBLOCK; // Flag to set the socket to non-blocking mode.
+    int ret = fcntl(m_server_socket, F_SETFL, flags);
     if (ret == -1)
     {
-        std::cerr << "Failed to set socket flags: " << strerror(errno) << std::endl;
-        return 1;
+        Output::shared_print("Failed to set socket flags ");
+        return -1;
     }
     int reuse = 1;
-    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == -1)
+    // Enable address reuse for the socket
+    if (setsockopt(m_server_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == -1)
     {
-        std::cerr << "Failed to set socket options: " << strerror(errno) << std::endl;
-        return 1;
+        Output::shared_print("Failed to set socket options");
+        return -1;
     }
+    // Structure for specifying the server address using IPv4
     struct sockaddr_in server_address;
-    memset(&server_address, 0, sizeof(server_address));
+    memset(&server_address, 0, sizeof(server_address)); // set the memory of the server_address structure to zero.
     server_address.sin_family = AF_INET;
-    server_address.sin_addr.s_addr = INADDR_ANY;
-    server_address.sin_port = htons(PORT_NUMBER);
+    server_address.sin_addr.s_addr = INADDR_ANY;  // IP address for binding the socket to all available network interfaces.
+    server_address.sin_port = htons(PORT_NUMBER); // Port number in network byt
 
-    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) == -1)
+    // Bind the socket to the server address
+    if (bind(m_server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) == -1)
     {
-        std::cerr << "Failed to bind socket: " << strerror(errno) << std::endl;
-        return 1;
+        Output::shared_print("Failed to bind socket: ");
+        return -1;
     }
+    // Listen for incoming connections on the socket, connection_queue size restrained to m_pending_connections
 
-    if (listen(server_socket, 8) == -1)
+    if (listen(m_server_socket, m_pending_connections) == -1)
     {
-        std::cerr << "Failed to listen on socket: " << strerror(errno) << std::endl;
-        return 1;
+        Output::shared_print("Failed to listen on socket: ");
+        return -1;
     }
     return 0;
 }
 
 int Server::start()
 {
+    std::cout << "\n\t[ Serveur Started ] " << std::endl;
 
     struct sockaddr_in client;
     unsigned int len = sizeof(sockaddr_in);
-
-    std::cout << "\n\t  ====== Serveur Started ======   " << std::endl;
     int client_socket;
-    while (shutdown_requested == false)
+    int id_client = 0;
+
+    // loop till stop called
+    while (m_shutdown_requested == false)
     {
-        // Tentative d'acceptation d'une nouvelle connexion
-        client_socket = accept(server_socket, (struct sockaddr *)&client, &len);
+        // Try accepting a new client (Non blocking) from queue
+        client_socket = accept(m_server_socket, (struct sockaddr *)&client, &len);
+        // if no pending connections
         if (client_socket == -1)
         {
-            // Gérer les erreurs d'acceptation
+            // check for specific error codes for non-blocking sockets,
+            // Used to avoid blocking state
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                // Aucune connexion en attente, continuer à vérifier
+                // No pending connection at the moment OR should be retry later
                 continue;
             }
             else
-            {
-                perror("accept error: ");
-                exit(-1);
+            { //
+                Output::shared_print("Accept error");
+                break;
             }
         }
-        seed++;
+        // connection accepted
+        id_client++; // each time a client is connected it has a new id
+
+        //  start asynchronous task to handle client ( listening for deconnection or messages)
         std::thread t([=]
-                      { handle_client(client_socket, seed); });
+                      { handle_client(client_socket, id_client); });
+        //  start asynchronous periodic task to send unique id to client every second
         std::thread t1([=]
                        { periodic_send_of_unique_id(client_socket); });
 
-        std::lock_guard<std::mutex> guard(clients_mtx);
-        clients.push_back({seed, client_socket, move(t), move(t1)});
+        // mutex lock to protect critical section clients
+        std::lock_guard<std::mutex> guard(m_clients_mtx);
+        m_clients.push_back({id_client, client_socket, move(t), move(t1)});
     }
-    std::cout << "End Main " << std::endl;
-    for (auto &client : clients)
+    // as stop has been called here, wait for the asynchronous taskes to finish before closing properly
+    for (auto &client : m_clients)
     {
-        if (client.th.joinable())
+        if (client.th_listen.joinable())
         {
-            std::cout << "Join thread " << client.id << std::endl;
-            client.th.join();
+            client.th_listen.join();
         }
         if (client.th_write.joinable())
         {
-            std::cout << "Join Writing thread " << client.id << std::endl;
             client.th_write.join();
         }
-
-    } // Ferme la socket du server
+    }
+    // Here Stop has been called
     std::cout << "Close Server\n ";
-
-    close(server_socket);
+    close(m_server_socket);
     return 0;
 }
 
-std::string Server::color(int code)
-{
-    return colors[code % NUM_COLORS];
-}
 Server::Server()
-    : colors{"\033[31m", "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}
+    : m_unique_id_generator()
 {
-    init();
 }
 
 void Server::stop()
 {
     broadcast_message("Thank you\n");
-    shutdown_requested = true;
+    m_shutdown_requested = true;
 }
 
-// For synchronisation of cout statements
-void Server::shared_print(const std::string &str)
+int Server::send_message_to_client(int client_socket, const std::string &message)
 {
-    std::lock_guard<std::mutex> guard(cout_mtx);
-    std::cout << str << std::endl;
-}
-
-void Server::send_message_to_client(int client_socket, const std::string &message)
-{
+    // send data over a connected socket
     ssize_t ret = send(client_socket, message.c_str(), message.size(), 0);
     if (ret == -1)
     {
-        std::cerr << "Error sending data to client" << std::endl;
-        return;
+        Output::shared_print("Socket closed");
+        return -1;
     }
+    return 1;
 }
-// Broadcast message to all clients except the sender
 void Server::broadcast_message(const std::string &message)
 {
-    for (int i = 0; i < clients.size(); i++)
-    {
-        send_message_to_client(clients[i].socket, message);
-    }
+    // acquire mutex
+    std::lock_guard<std::mutex> lock(m_clients_mtx);
+    perform_broadcast(message);
+    // release mutex
 }
 
+void Server::perform_broadcast(const std::string &message)
+{
+    // iterate over every client structure
+    for (int i = 0; i < m_clients.size(); i++)
+    {
+        send_message_to_client(m_clients[i].socket, message);
+    }
+}
 void Server::broadcast_client_count()
 {
-    std::string message;
-    {
-        std::lock_guard<std::mutex> lock(clients_mtx);
-        int num_clients = clients.size(); // attention a la synchronisation
-        message + "Number of clients: " + std::to_string(num_clients);
-    }
-    broadcast_message(message);
+    // acquire mutex
+    std::lock_guard<std::mutex> lock(m_clients_mtx);
+    std::string message = "Number of clients " + std::to_string(m_clients.size()) + "\n";
+    perform_broadcast(message);
 }
 
-void Server::end_connection(int id)
+void Server::end_client_connection(int client_socket, int id)
 {
     std::cout << "Client " << id << " quitting" << std::endl;
-    std::lock_guard<std::mutex> guard(clients_mtx);
-    for (int i = 0; i < clients.size(); i++)
+    std::lock_guard<std::mutex> guard(m_clients_mtx);
+    // acquire mutex
+    // search for the client to stop
+    for (int i = 0; i < m_clients.size(); i++)
     {
-        if (clients[i].id == id)
+        if (m_clients[i].socket == client_socket)
         {
             std::cout << "Client socket " << id << " close" << std::endl;
-            close(clients[i].socket); // Ferme la socket du client
-
-            clients[i].th.detach();
-            clients[i].th_write.detach();
-
-            clients.erase(clients.begin() + i);
+            // close socket
+            close(m_clients[i].socket);
+            // detach threads, and assume . Assumes they will terminate on their own
+            m_clients[i].th_listen.detach();
+            m_clients[i].th_write.detach();
+            // remove client from list
+            m_clients.erase(m_clients.begin() + i);
+            Output::shared_print(std::to_string(m_clients.size()) + " clients remaining");
             break;
         }
     }
+    // release mutex
 }
 void Server::periodic_send_of_unique_id(int client_socket)
 {
-    while (shutdown_requested == false)
+    while (m_shutdown_requested == false)
     {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        std::string message = "Your unique id is 1";
-        send_message_to_client(client_socket, message);
+        std::this_thread::sleep_for(std::chrono::seconds(m_write_period_in_s));
+        std::string message = std::to_string(m_unique_id_generator.generateID()) + "\t\n";
+        if (send_message_to_client(client_socket, message) != 1)
+        {
+            // if could not write, client disconnected, exit the loop
+            break;
+        }
     }
-    std::cout << "End Writing thread\n";
+    Output::shared_print("End Writing thread\n");
 }
 
 void Server::handle_client(int client_socket, int id)
 {
     char str[MAX_LEN];
 
-    // Display welcome message
-    std::string client_entered_message = "Client " + std::to_string(id) + "has joined\n";
+    // Display welcome message on output and send to client
+    std::string client_entered_message = "Client " + std::to_string(id) + " has joined\n";
+    Output::shared_print(client_entered_message);
     broadcast_message(client_entered_message);
 
     std::string press_enter_message = "Press Enter to get the number of clients\n";
     send_message_to_client(client_socket, press_enter_message);
-    shared_print(color(id) + client_entered_message + def_col);
 
-    // gere les messages du client
-    while (shutdown_requested == false)
+    // loop till Stop is called
+    while (m_shutdown_requested == false)
     {
+        // Receive bytes data from the client (non-blocking)
         int bytes_received = recv(client_socket, str, sizeof(str), MSG_DONTWAIT); // non bloquant
-                                                                                  // verify if connection interrupted or error
+
+        // if no bytes, Verify if connection is interrupted or error occurred
         if (bytes_received == -1)
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                // Aucune donnée disponible pour le moment, continuer à vérifier
-                // ou effectuer d'autres opérations
+                // No data available at the moment, continue checking
                 continue;
             }
             else
-            {
-                std::cerr << "Failed to receive data: " << strerror(errno) << std::endl; // i
-                shared_print(color(id) + "Error receiving data with client " + std::to_string(id));
-                // return;
+            {                                                     // if other error than those accepted
+                Output::shared_print("Failed to receive data: "); // i
                 break;
             }
         }
         else if (bytes_received == 0)
-        {
-            shared_print(color(id) + "Connection interrupted by cient " + std::to_string(id));
+        { // client disconnected
+            Output::shared_print("Connection interrupted by client " + std::to_string(id));
             break;
         }
         // verify if character is a new line
         if (std::string(str, bytes_received).find('\n') != std::string::npos || std::string(str, bytes_received).find('\r') != std::string::npos)
         {
-            shared_print(color(id) + "New line detected from client " + std::to_string(id) + def_col);
-            shared_print("Broadcast Client Count");
+            Output::shared_print("Number of clients asked by client " + std::to_string(id) + ", broadcast to all");
+            Output::shared_print("Broadcast Client Count");
             broadcast_client_count();
         }
     }
-    std::cout << "Fin thread Handle Client " << id << std::endl;
-    end_connection(id);
-    shared_print(color(id) + std::to_string(clients.size()) + " clients remaining");
+    // Stopped asked here or client disconnected
+    Output::shared_print("End Listen Handle Client " + id);
+    end_client_connection(client_socket, id);
 }
