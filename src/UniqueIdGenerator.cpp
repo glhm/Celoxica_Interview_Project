@@ -13,9 +13,7 @@ UniqueIdGenerator::UniqueIdGenerator() : m_maxValueCounter((1u << m_counterBits)
 
 uint32_t UniqueIdGenerator::generateID()
 {
-#ifdef ENABLE_TIME_STAMP
-    auto start = std::chrono::high_resolution_clock::now();
-#endif
+    // auto start = std::chrono::high_resolution_clock::now();
 
     /*- Shift the value of m_randomNumber to the left by m_counterBits positions. This effectively creates space to welcome m_counter.
       - Bitwise OR operator to combine the shifted random number with the counter value.
@@ -27,13 +25,10 @@ uint32_t UniqueIdGenerator::generateID()
         m_counter = 0;
         m_randomNumber = m_randomDistribution(m_randomEngine);
     }
-#ifdef ENABLE_TIME_STAMP
 
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-    std::cout << "Id Generated " << m_randomNumber << ": Runtime duration of generateID(): " << duration.count() << " nanoseconds" << std::endl;
-
-#endif
+    // auto end = std::chrono::high_resolution_clock::now();
+    // auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+    // std::cout << "Id Generated " << m_randomNumber << ": Runtime duration of generateID(): " << duration.count() << " nanoseconds" << std::endl;
 
     return id;
 }

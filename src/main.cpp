@@ -11,8 +11,9 @@ void signalHandler(int signum)
     if (signum == SIGINT)
     {
         if (server)
+        {
             server->stop(); // Appel de la fonction stop() pour arrêter le serveur proprement
-                            // exit(signum); // Terminer le programme avec le code de sortie du signal
+        }
     }
 }
 
@@ -22,15 +23,13 @@ int main()
 
     server = std::make_unique<Server>();
 
-    if (server->init() == -1)
+    if (server->init() == false)
     {
         return 0;
     }
-
-    if (server->start() == -1)
+    else
     {
-        std::cout << "Error Starting server, finish" << std::endl;
-        return 0;
+        server->start();
     }
 
     return 0;
