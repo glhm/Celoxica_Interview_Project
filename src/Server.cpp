@@ -92,25 +92,26 @@ void Server::start()
 
         //  start asynchronous task to handle client ( listening for deconnection or messages)
         std::thread t([=]
-                      { handle_client(id_client); });
+                      { handle_client(client_socket, id_client); });
         //  start asynchronous periodic task to send unique id to client every second
         std::thread t1([=]
                        { periodic_send_of_unique_id(client_socket); });
 
         // mutex lock to protect critical section clients
         std::lock_guard<std::mutex> guard(m_clients_mtx);
-        m_clients.emplace(id_client, Client{client_socket, move(t), move(t1)});
+        m_clients.push_back({id_client, client_socket, move(t), move(t1)});
     }
+
     // stop has been called here, wait for the asynchronous taskes to finish before closing properly
     for (auto &client : m_clients)
     {
-        if (client.second.th_listen.joinable())
+        if (client.th_listen.joinable())
         {
-            client.second.th_listen.join();
+            client.th_listen.join();
         }
-        if (client.second.th_write.joinable())
+        if (client.th_write.joinable())
         {
-            client.second.th_write.join();
+            client.th_write.join();
         }
     }
     // Here Stop has been called
@@ -153,10 +154,9 @@ void Server::broadcast_message(const std::string &message)
 
 void Server::perform_broadcast(const std::string &message)
 {
-    // iterate over every client structure
-    for (int i = 0; i < m_clients.size(); i++)
+    for (auto &client : m_clients)
     {
-        send_message_to_client(m_clients[i].socket, message);
+        send_message_to_client(client.socket, message);
     }
 }
 void Server::broadcast_client_count()
@@ -167,23 +167,27 @@ void Server::broadcast_client_count()
     perform_broadcast(message);
 }
 
-void Server::end_client_connection(int id)
+void Server::end_client_connection(int client_socket, int id)
 { // acquire mutex
     std::lock_guard<std::mutex> guard(m_clients_mtx);
-    auto client_socket = m_clients[id].socket;
-    // close socket
-    close(client_socket);
-    Output::shared_print("Client socket " + std::to_string(id) + " close");
-
-    // detach threads, and assume . Assumes they will terminate on their own
-    m_clients[id].th_listen.detach(); // this thread so not joinable
-    m_clients[id].th_write.join();    // wait for writing thread
-    // remove client from list
-    m_clients.erase(id);
-
-    Output::shared_print(std::to_string(m_clients.size()) + " clients remaining");
-
-    // release mutex
+    // acquire mutex
+    // search for the client to stop
+    for (int i = 0; i < m_clients.size(); i++)
+    {
+        if (m_clients[i].socket == client_socket)
+        {
+            std::cout << "Client socket " << id << " close" << std::endl;
+            // close socket
+            close(m_clients[i].socket);
+            // detach threads, and assume . Assumes they will terminate on their own
+            m_clients[i].th_listen.detach();
+            m_clients[i].th_write.detach();
+            // remove client from list
+            m_clients.erase(m_clients.begin() + i);
+            Output::shared_print(std::to_string(m_clients.size()) + " clients remaining");
+            break;
+        }
+    }
 }
 void Server::periodic_send_of_unique_id(int client_socket)
 {
@@ -199,10 +203,9 @@ void Server::periodic_send_of_unique_id(int client_socket)
     }
 }
 
-void Server::handle_client(int id)
+void Server::handle_client(int client_socket, int id)
 {
     char str[m_max_buffer_length]; // buffer to store data received from client
-    auto client_socket = m_clients[id].socket;
     // Display welcome message on output and send to client
     std::string client_entered_message = "Client " + std::to_string(id) + " has joined\n";
     Output::shared_print(client_entered_message);
@@ -245,5 +248,5 @@ void Server::handle_client(int id)
         }
     }
     // Stopped asked here or client disconnected
-    end_client_connection(id);
+    end_client_connection(client_socket, id);
 }

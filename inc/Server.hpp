@@ -10,14 +10,14 @@
 #include <unistd.h>
 #include <thread>
 #include <mutex>
-#include <map>
-
 #include <fcntl.h>
 #include <atomic>
 #include "UniqueIdGenerator.hpp"
+
 // Structure to modelize a Server-side client
 struct Client
 {
+    int id;                // number to identify the client
     int socket;            // socket associated for the server to connect to
     std::thread th_listen; // thread in charge of polling for client messages
     std::thread th_write;  // thread in charge of writing periodically to the client
@@ -51,9 +51,10 @@ public:
 
     /**
      * Polls the data from a client
+     * @param client_socket socket on which data is received
      * @param id number of the client for displaying
      */
-    void handle_client(int id);
+    void handle_client(int client_socket, int id);
 
     /**
      * Send to client socket unique ids periodically
@@ -72,9 +73,10 @@ private:
 
     /**
      * Close client socket and detach related threads
+     * @param client_socket socket to close
      * @param id id of the client
      */
-    void end_client_connection(int id);
+    void end_client_connection(int client_socket, int id);
 
     /**
      * Calls perform_broadcast after locking clients_mtx
@@ -96,7 +98,7 @@ private:
 
     UniqueIdGenerator m_unique_id_generator; // generator of ids to send periodically to clients
 
-    std::map<int, Client> m_clients;               // current clients connected map id of clients, structure of clients
+    std::vector<Client> m_clients;                 // current clients connected
     std::atomic<bool> m_shutdown_requested{false}; // flag which is raised when Stop is asked
     std::mutex m_clients_mtx;                      // mutex to avoid data races when accessing client shared data
     int m_server_socket;                           // file descriptor of a socket, describes a communication endpoints
