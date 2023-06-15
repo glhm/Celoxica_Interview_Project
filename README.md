@@ -13,7 +13,8 @@ Compilation :
 Execution :
 In the build repository :
 1 - ./Celo 
-2 - telnet <ipV4 address> 12345
+2 - on differents terminal : telnet <ipV4 address> 12345
+3 - kill the telnet terminals to disconnect clients or Ctrl + C on server
 
 
 

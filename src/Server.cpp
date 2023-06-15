@@ -1,6 +1,6 @@
 #include "Server.hpp"
 #include "Output.hpp"
-
+#include <algorithm>
 bool Server::init()
 {
     // Create socket, reliable mode, IPv4 adress
@@ -78,7 +78,8 @@ void Server::start()
             // Used to avoid blocking state
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                // No pending connection at the moment OR should be retry later
+                // limit the polling loop by putting the thread to sleep for a short time
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 continue;
             }
             else
@@ -90,6 +91,18 @@ void Server::start()
         // connection accepted
         id_client++; // each time a client is connected it has a new id
 
+        // Check if the maximum number of clients has been reached
+        if (m_clients.size() >= m_max_number_of_clients)
+        {
+            // Reject the connection if the maximum number of clients is exceeded
+            std::string reject_message = "Connection rejected. Maximum number of clients reached.\n";
+            send_message_to_client(client_socket, reject_message);
+            Output::shared_print(reject_message);
+
+            close(client_socket);
+            continue;
+        }
+
         //  start asynchronous task to handle client ( listening for deconnection or messages)
         std::thread t([=]
                       { handle_client(client_socket, id_client); });
@@ -99,20 +112,7 @@ void Server::start()
 
         // mutex lock to protect critical section clients
         std::lock_guard<std::mutex> guard(m_clients_mtx);
-        m_clients.push_back({id_client, client_socket, move(t), move(t1)});
-    }
-
-    // stop has been called here, wait for the asynchronous taskes to finish before closing properly
-    for (auto &client : m_clients)
-    {
-        if (client.th_listen.joinable())
-        {
-            client.th_listen.join();
-        }
-        if (client.th_write.joinable())
-        {
-            client.th_write.join();
-        }
+        m_clients.push_back({id_client, client_socket, move(t), move(t1), true});
     }
     // Here Stop has been called
     std::cout << "Close Server\n ";
@@ -130,7 +130,7 @@ void Server::stop()
     m_shutdown_requested = true;
 }
 
-bool Server::send_message_to_client(int client_socket, const std::string &message)
+bool Server::send_message_to_client(int client_socket, const std::string &message) const
 {
     // send data over a connected socket ret = number of bytes sent
     ssize_t ret = send(client_socket, message.c_str(), message.size(), 0);
@@ -152,7 +152,7 @@ void Server::broadcast_message(const std::string &message)
     // release mutex
 }
 
-void Server::perform_broadcast(const std::string &message)
+void Server::perform_broadcast(const std::string &message) const
 {
     for (auto &client : m_clients)
     {
@@ -168,22 +168,23 @@ void Server::broadcast_client_count()
 }
 
 void Server::end_client_connection(int client_socket, int id)
-{ // acquire mutex
+{
     std::lock_guard<std::mutex> guard(m_clients_mtx);
     // acquire mutex
     // search for the client to stop
-    for (int i = 0; i < m_clients.size(); i++)
+    for (auto it = m_clients.begin(); it != m_clients.end(); ++it)
     {
-        if (m_clients[i].socket == client_socket)
+        if (it->socket == client_socket)
         {
             std::cout << "Client socket " << id << " close" << std::endl;
             // close socket
-            close(m_clients[i].socket);
-            // detach threads, and assume . Assumes they will terminate on their own
-            m_clients[i].th_listen.detach();
-            m_clients[i].th_write.detach();
+            close(client_socket);
+            it->connected = false;
+            // detach threads, assume they will terminate on their own
+            it->th_listen.detach();
+            it->th_write.detach();
             // remove client from list
-            m_clients.erase(m_clients.begin() + i);
+            m_clients.erase(it);
             Output::shared_print(std::to_string(m_clients.size()) + " clients remaining");
             break;
         }
@@ -237,6 +238,7 @@ void Server::handle_client(int client_socket, int id)
         else if (bytes_received == 0)
         { // client disconnected
             Output::shared_print("Connection interrupted by client " + std::to_string(id));
+
             break;
         }
         // if data successfully received, verify if data contains newline character
@@ -247,6 +249,5 @@ void Server::handle_client(int client_socket, int id)
             broadcast_client_count();
         }
     }
-    // Stopped asked here or client disconnected
     end_client_connection(client_socket, id);
 }

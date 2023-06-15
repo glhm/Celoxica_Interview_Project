@@ -21,6 +21,7 @@ struct Client
     int socket;            // socket associated for the server to connect to
     std::thread th_listen; // thread in charge of polling for client messages
     std::thread th_write;  // thread in charge of writing periodically to the client
+    bool connected;        // flag to know if the client is still connected
 };
 
 /*
@@ -69,7 +70,7 @@ private:
      * @param message message to send
      * @return true if success, false otherwise
      */
-    bool send_message_to_client(int client_socket, const std::string &message);
+    bool send_message_to_client(int client_socket, const std::string &message) const;
 
     /**
      * Close client socket and detach related threads
@@ -88,7 +89,7 @@ private:
      * Sends data to a clients
      * @param message message to broadcast
      */
-    void perform_broadcast(const std::string &message);
+    void perform_broadcast(const std::string &message) const;
 
     /**
      * Sends number of clients to all clients
@@ -98,7 +99,9 @@ private:
 
     UniqueIdGenerator m_unique_id_generator; // generator of ids to send periodically to clients
 
-    std::vector<Client> m_clients;                 // current clients connected
+    std::vector<Client> m_clients;              // current clients connected
+    std::vector<std::thread> m_threads_to_join; // threads to join when stopping the server
+
     std::atomic<bool> m_shutdown_requested{false}; // flag which is raised when Stop is asked
     std::mutex m_clients_mtx;                      // mutex to avoid data races when accessing client shared data
     int m_server_socket;                           // file descriptor of a socket, describes a communication endpoints
